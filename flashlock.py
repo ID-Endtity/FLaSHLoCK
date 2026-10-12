@@ -1,21 +1,21 @@
-"""FlashLock v1 — portable USB file encryption.
+"""FlashLock — portable USB file encryption.
 
 Encrypts the files in the folder it sits in (the drive root) behind a password,
 and decrypts them back with the same password. Runs from source (Python) or as
-a PyInstaller build on macOS and Windows.
+a PyInstaller one-file build on macOS and Windows.
 
 Design:
     password + salt --PBKDF2-HMAC-SHA256 (200k)--> 32-byte key --> Fernet key
     Fernet = AES-128-CBC + HMAC-SHA256, so each file is encrypted *and* tagged.
 The salt (.flashlock_salt) sits openly on the drive; the password lives only in
-the user's head. The HMAC tag is what confirms the password was right on decrypt.
-
-v1 note: file names are kept in plaintext — secret.txt becomes secret.txt.enc.
-(Password verification and filename encryption came later.)
+the user's head. A marker file (.flashlock_marker) holds an HMAC tag keyed by the
+derived key, so a wrong password is caught before any file is touched. File names
+are encrypted too: each file's on-disk name is a Fernet token over the real name.
 """
 
 import base64
 import hashlib
+import hmac
 import os
 import sys
 import tkinter as tk
@@ -24,16 +24,13 @@ from tkinter import messagebox, simpledialog
 from cryptography.fernet import Fernet, InvalidToken
 
 SALT_FILE = ".flashlock_salt"
+MARKER_FILE = ".flashlock_marker"
+MARKER_MSG = b"flashlock-v1"
 ITERATIONS = 200_000
 
-# Files the program must never encrypt: the salt and its own source/binary.
-PROTECTED_NAMES = {
-    SALT_FILE,
-    "flashlock",          # built binary
-    "flashlock.exe",      # Windows build
-    "flashlock.py",       # original source name
-    os.path.basename(os.path.abspath(__file__)),  # this file, whatever it's named
-}
+# Files we must never encrypt: the salt, the marker, and the program itself.
+PROTECTED_NAMES = {"flashlock", "flashlock.py", "flashlock.exe",
+                   SALT_FILE, MARKER_FILE}
 
 
 def app_dir():
@@ -60,29 +57,56 @@ def get_salt(folder):
     return salt
 
 
-def make_key(password, salt):
-    """Derive a Fernet key from a password and salt."""
-    dk = hashlib.pbkdf2_hmac(
+def derive_key(password, salt):
+    """Derive 32 raw key bytes from a password and salt via PBKDF2."""
+    return hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), salt, ITERATIONS, dklen=32
     )
-    return base64.urlsafe_b64encode(dk)
+
+
+def fernet_key(raw_key):
+    """Wrap raw key bytes as a Fernet key (urlsafe base64)."""
+    return base64.urlsafe_b64encode(raw_key)
+
+
+def make_marker(raw_key):
+    """A 32-byte HMAC tag over a known constant, keyed by the derived key."""
+    return hmac.new(raw_key, MARKER_MSG, hashlib.sha256).digest()
+
+
+def write_marker(folder, raw_key):
+    """Write the marker file for the given key."""
+    with open(os.path.join(folder, MARKER_FILE), "wb") as f:
+        f.write(make_marker(raw_key))
+
+
+def check_marker(folder, raw_key):
+    """Return True if the stored marker matches the given key."""
+    path = os.path.join(folder, MARKER_FILE)
+    if not os.path.exists(path):
+        return False
+    with open(path, "rb") as f:
+        stored = f.read()
+    return hmac.compare_digest(stored, make_marker(raw_key))
 
 
 def encrypt_folder(folder, key):
-    """Encrypt every file under `folder`, replacing each with a .enc copy."""
+    """Encrypt every file under `folder`; name and content are both encrypted."""
     f = Fernet(key)
     count = 0
     for root, dirs, files in os.walk(folder):
-        # Never descend into .app bundles (the macOS build).
-        dirs[:] = [d for d in dirs if not d.endswith(".app")]
+        # Skip hidden directories and .app bundles entirely.
+        dirs[:] = [d for d in dirs if not d.startswith(".") and not d.endswith(".app")]
         for name in files:
-            if name.endswith(".enc") or name in PROTECTED_NAMES:
+            # Skip hidden files, .enc files, and the program's own files.
+            if name.startswith(".") or name.endswith(".enc") or name in PROTECTED_NAMES:
                 continue
             path = os.path.join(root, name)
             with open(path, "rb") as file:
                 data = file.read()
-            # Write the new file completely, then delete the original.
-            with open(path + ".enc", "wb") as file:
+            # The on-disk name is a Fernet token over the original name.
+            enc_name = f.encrypt(name.encode("utf-8")).decode("ascii")
+            with open(os.path.join(root, enc_name + ".enc"), "wb") as file:
                 file.write(f.encrypt(data))
             os.remove(path)
             count += 1
@@ -90,12 +114,18 @@ def encrypt_folder(folder, key):
 
 
 def decrypt_folder(folder, key):
-    """Decrypt every .enc file under `folder`, replacing it with the original."""
+    """Decrypt every .enc file; the name token and content are both decrypted."""
     f = Fernet(key)
     count = 0
     for root, _, files in os.walk(folder):
         for name in files:
             if not name.endswith(".enc"):
+                continue
+            # The filename (minus .enc) is an encrypted original name. If it
+            # doesn't decrypt, it's a foreign *.enc file, not one of ours.
+            try:
+                original_name = f.decrypt(name[:-4].encode("ascii")).decode("utf-8")
+            except (InvalidToken, UnicodeError):
                 continue
             path = os.path.join(root, name)
             with open(path, "rb") as file:
@@ -105,15 +135,15 @@ def decrypt_folder(folder, key):
             except InvalidToken:
                 raise ValueError(f"Wrong password or corrupted file: {name}")
             # Write the decrypted file completely, then delete the .enc.
-            with open(path[:-4], "wb") as file:
+            with open(os.path.join(root, original_name), "wb") as file:
                 file.write(decrypted)
             os.remove(path)
             count += 1
     return count
 
 
-def ask_password(title):
-    return simpledialog.askstring(title, "Enter password:", show="*")
+def ask_password(title, prompt="Enter password:"):
+    return simpledialog.askstring(title, prompt, show="*")
 
 
 def main():
@@ -135,7 +165,18 @@ def main():
             messagebox.showwarning("Weak password", "Use at least 8 characters.")
             return
         salt = get_salt(folder)
-        key = make_key(pwd, salt)
+        raw_key = derive_key(pwd, salt)
+        if os.path.exists(os.path.join(folder, MARKER_FILE)):
+            if not check_marker(folder, raw_key):
+                messagebox.showerror("Error", "Wrong password.")
+                return
+        else:
+            confirm = ask_password("Confirm password", "Enter password again:")
+            if confirm != pwd:
+                messagebox.showerror("Error", "Passwords don't match.")
+                return
+            write_marker(folder, raw_key)
+        key = fernet_key(raw_key)
         try:
             n = encrypt_folder(folder, key)
             messagebox.showinfo("Done", f"Encrypted files: {n}")
@@ -149,8 +190,15 @@ def main():
         if not os.path.exists(os.path.join(folder, SALT_FILE)):
             messagebox.showerror("Error", "Salt file not found.")
             return
+        if not os.path.exists(os.path.join(folder, MARKER_FILE)):
+            messagebox.showerror("Error", "Marker file not found. Cannot verify password.")
+            return
         salt = get_salt(folder)
-        key = make_key(pwd, salt)
+        raw_key = derive_key(pwd, salt)
+        if not check_marker(folder, raw_key):
+            messagebox.showerror("Error", "Wrong password.")
+            return
+        key = fernet_key(raw_key)
         try:
             n = decrypt_folder(folder, key)
             messagebox.showinfo("Done", f"Decrypted files: {n}")
