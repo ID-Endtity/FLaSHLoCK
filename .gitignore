@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.spec
+.DS_Store
+
+# FlashLock runtime state
+.flashlock_salt
+.flashlock_marker
+*.enc
