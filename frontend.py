@@ -1,11 +1,19 @@
 import tkinter as tk
 from tkinter import Checkbutton, messagebox
 
+import backend
+
 
 class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Password check")
+        root.geometry("380x240")
+        root.resizable(False, False)
+        folder=backend.app_dir()
+        
+        tk.Label(root, text=f"Folder: {folder}",
+                    wraplength=360, justify="left").pack(pady=10)
         self.pwd= ""
         # self.root.geometry("500x300")
         self.menu()
@@ -83,20 +91,18 @@ class App:
         if len(pwd1) < 8 and not type:
             messagebox.showwarning("Weak password", "Use at least 8 characters.")
 
-
         elif pwd1 == pwd2 and not type:
-            messagebox.showinfo("Success", "Passwords match.")
+            messagebox.showinfo("Success", "Passwords match. Started encryption.")
             self.pwd = pwd1
             self.win_set_pwd.destroy()
+            result = backend.encrypt(pwd1)
+            messagebox.showinfo("Done", result)
             #Encryption can proceed now
 
         elif pwd1 == pwd2:
-            messagebox.showinfo("Success", "Password correct.")
             self.win_check.destroy()
-            if type == 1: #Encryption can proceed now
-                return 
-            #Decryption can proceed now
-            return
+            result = backend.encrypt(pwd1) if type == 1 else backend.decrypt(pwd1) #Encryption or decryption can proceed now
+            messagebox.showinfo("Done", result)
         
         elif pwd1 != pwd2 and type:
             messagebox.showerror("Error", "Wrong password.")
