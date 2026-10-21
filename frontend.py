@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import Checkbutton, messagebox
+import backend
 
 
 class App:
@@ -7,10 +8,12 @@ class App:
         self.root = root
         self.root.title("Password check")
         self.pwd= ""
-        # self.root.geometry("500x300")
+        self.folder = backend.app_dir()
+        self.root.geometry("500x300")
         self.menu()
 
     def menu(self):
+        tk.Label(self.root, text=f"Working in directory: {self.folder}", justify="center").pack(pady=10) #, wraplength=400
         tk.Button(self.root, text="🔒 Encrypt", width=24, command=self.encr).pack(pady=5)
         tk.Button(self.root, text="🔓 Decrypt", width=24, command=lambda: self.check(type=2)).pack(pady=5)
         tk.Button(self.root, text="Exit", width=24, command=self.root.destroy).pack(pady=5)
