@@ -120,6 +120,16 @@ def check_marker(folder, raw_key):
     return hmac.compare_digest(stored_marker, expected_marker)
 
 
+def has_marker():
+    """Возвращает True, если маркер уже существует (пароль уже установлен).
+
+    Фронтенд использует это, чтобы после перезапуска программы понять,
+    что пароль уже задан, и спрашивать его повторно, а не предлагать
+    задать заново.
+    """
+    return os.path.exists(os.path.join(app_dir(), MARKER_FILE))
+
+
 def encrypt_folder(folder, key):
     """Шифрует каждый файл в папке: и содержимое, и имя файла.
 
@@ -230,5 +240,37 @@ def decrypt(password):
         key = fernet_key(raw_key)
         count = decrypt_folder(folder, key)
         return f"Decrypted files: {count}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def has_encrypted_files():
+    """Возвращает True, если в папке ещё есть зашифрованные .enc-файлы."""
+    folder = app_dir()
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and not d.endswith(".app")]
+        for name in files:
+            if name.endswith(".enc"):
+                return True
+    return False
+
+
+def reset_password():
+    """Сбрасывает пароль: удаляет маркер и соль (пароль становится «нулевым»).
+
+    Отказывает, если в папке ещё есть зашифрованные файлы — сначала их
+    нужно расшифровать, иначе они станут нечитаемыми навсегда.
+    """
+    folder = app_dir()
+    try:
+        if has_encrypted_files():
+            return "Decrypt your files first — some files are still encrypted."
+        marker_path = os.path.join(folder, MARKER_FILE)
+        if os.path.exists(marker_path):
+            os.remove(marker_path)
+        salt_path = os.path.join(folder, SALT_FILE)
+        if os.path.exists(salt_path):
+            os.remove(salt_path)
+        return "Password reset."
     except Exception as e:
         return f"Error: {e}"
