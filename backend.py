@@ -1,7 +1,7 @@
-"""FlashLock backend — the encryption logic, without any UI.
+"""FlashLock backend — вся логика шифрования, без интерфейса.
 
-The frontend (frontend.py) collects and verifies the password, then calls
-backend.encrypt() or backend.decrypt(). Everything else lives here.
+Фронтенд (frontend.py) запрашивает и проверяет пароль, а затем вызывает
+backend.encrypt() или backend.decrypt(). Всё остальное находится здесь.
 """
 
 import base64
@@ -12,12 +12,13 @@ import sys
 
 from cryptography.fernet import Fernet, InvalidToken
 
-SALT_FILE = ".flashlock_salt"
-MARKER_FILE = ".flashlock_marker"
-MARKER_MSG = b"flashlock-v1"
-ITERATIONS = 200_000
+SALT_FILE = ".flashlock_salt"      # файл с солью (16 случайных байт)
+MARKER_FILE = ".flashlock_marker"  # файл-маркер для проверки пароля
+MARKER_MSG = b"flashlock-v1"       # фиксированная строка, из которой считается маркер
+ITERATIONS = 200_000               # сколько раз PBKDF2 повторяет хеш (защита от перебора пароля)
 
-# Files the program must never encrypt: its own source, the salt, the marker.
+# Файлы, которые программа никогда не должна шифровать:
+# собственную соль, свой маркер и свой исходный код.
 PROTECTED_NAMES = {
     SALT_FILE,
     MARKER_FILE,
@@ -27,137 +28,207 @@ PROTECTED_NAMES = {
 
 
 def app_dir():
-    """Return the folder the program sits in (the drive root)."""
+    """Возвращает папку, в которой лежит программа (корень флешки)."""
     if getattr(sys, "frozen", False):
+        # Программа собрана PyInstaller'ом и запущена как .app/.exe,
+        # поэтому sys.executable указывает на исполняемый файл, а не на .py.
         if sys.platform == "darwin":
+            # На macOS исполняемый файл лежит внутри пакета .app:
+            #   .../FlashLock.app/Contents/MacOS/FlashLock
+            # Поднимаемся на 3 уровня вверх до самого .app, затем ещё на один —
+            # получаем папку, в которой лежит .app (это и есть корень флешки).
             bundle = os.path.abspath(os.path.join(sys.executable, "..", "..", ".."))
             return os.path.dirname(bundle)
+        # Windows: папка рядом с .exe.
         return os.path.dirname(sys.executable)
+    # Запуск из исходника (python backend.py): папка рядом с этим файлом.
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def get_salt(folder):
-    """Read the salt file, or create a fresh 16-byte salt on first use."""
-    path = os.path.join(folder, SALT_FILE)
-    if os.path.exists(path):
-        with open(path, "rb") as f:
-            return f.read()
-    salt = os.urandom(16)
-    with open(path, "wb") as f:
-        f.write(salt)
-    return salt
+    """Читает файл соли, либо создаёт новую 16-байтную соль при первом запуске.
+
+    Соль — случайное число, которое лежит на флешке открыто. Оно нужно, чтобы
+    один и тот же пароль давал РАЗНЫЙ ключ на разных флешках.
+    """
+    salt_path = os.path.join(folder, SALT_FILE)
+    if os.path.exists(salt_path):
+        # Соль уже создана раньше — просто читаем её (она никогда не меняется).
+        with open(salt_path, "rb") as file:
+            existing_salt = file.read()
+        return existing_salt
+    # Первый запуск: генерируем 16 случайных байт и сохраняем их в файл.
+    new_salt = os.urandom(16)
+    with open(salt_path, "wb") as file:
+        file.write(new_salt)
+    return new_salt
 
 
 def derive_key(password, salt):
-    """Derive 32 raw key bytes from a password and salt via PBKDF2."""
-    return hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, ITERATIONS, dklen=32
+    """Превращает пароль + соль в 32 сырых байта ключа через PBKDF2."""
+    password_bytes = password.encode("utf-8")
+    derived_key = hashlib.pbkdf2_hmac(
+        "sha256", password_bytes, salt, ITERATIONS, dklen=32
     )
+    return derived_key
 
 
 def fernet_key(raw_key):
-    """Wrap raw key bytes as a Fernet key (urlsafe base64)."""
-    return base64.urlsafe_b64encode(raw_key)
+    """Оборачивает сырые байты ключа в ключ Fernet (base64).
+
+    Fernet ожидает ключ в виде base64-строки, а не сырых байтов,
+    поэтому кодируем 32 байта в base64.
+    """
+    encoded_key = base64.urlsafe_b64encode(raw_key)
+    return encoded_key
 
 
 def make_marker(raw_key):
-    """A 32-byte HMAC tag over a known constant, keyed by the derived key."""
-    return hmac.new(raw_key, MARKER_MSG, hashlib.sha256).digest()
+    """Считает 32-байтный HMAC-тег по фиксированной строке с помощью ключа.
+
+    Это «маркер» — значение, по которому программа проверяет правильность
+    пароля, НЕ храня сам пароль.
+    """
+    marker_tag = hmac.new(raw_key, MARKER_MSG, hashlib.sha256).digest()
+    return marker_tag
 
 
 def write_marker(folder, raw_key):
-    with open(os.path.join(folder, MARKER_FILE), "wb") as f:
-        f.write(make_marker(raw_key))
+    """Записывает маркер в файл .flashlock_marker.
+
+    Вызывается при ПЕРВОМ шифровании, чтобы «запомнить» правильный пароль.
+    """
+    marker_tag = make_marker(raw_key)
+    with open(os.path.join(folder, MARKER_FILE), "wb") as file:
+        file.write(marker_tag)
 
 
 def check_marker(folder, raw_key):
-    """Return True if the stored marker matches the given key."""
-    path = os.path.join(folder, MARKER_FILE)
-    if not os.path.exists(path):
-        return False
-    with open(path, "rb") as f:
-        stored = f.read()
-    return hmac.compare_digest(stored, make_marker(raw_key))
+    """Проверяет, совпадает ли сохранённый маркер с текущим ключом.
+
+    Возвращает True, если пароль правильный, и False — если неправильный
+    или маркера ещё нет.
+    """
+    marker_path = os.path.join(folder, MARKER_FILE)
+    if not os.path.exists(marker_path):
+        return False  # маркера ещё нет — проверять нечего
+    with open(marker_path, "rb") as file:
+        stored_marker = file.read()
+    # Считаем маркер заново из текущего ключа и сравниваем.
+    expected_marker = make_marker(raw_key)
+    # hmac.compare_digest сравнивает за постоянное время (защита от атаки по времени).
+    return hmac.compare_digest(stored_marker, expected_marker)
 
 
 def encrypt_folder(folder, key):
-    """Encrypt every file under `folder`; name and content are both encrypted."""
-    f = Fernet(key)
-    count = 0
+    """Шифрует каждый файл в папке: и содержимое, и имя файла.
+
+    Рекурсивно обходит все файлы. Каждый файл превращается в .enc со
+    «случайным» именем (это зашифрованное настоящее имя).
+    """
+    cipher = Fernet(key)
+    count = 0  # сколько файлов зашифровано
     for root, dirs, files in os.walk(folder):
+        # Не заходим в скрытые папки (.venv, .git, .Trashes...) и в .app.
         dirs[:] = [d for d in dirs if not d.startswith(".") and not d.endswith(".app")]
         for name in files:
+            # Пропускаем скрытые файлы, уже зашифрованные (.enc) и защищённые.
             if name.startswith(".") or name.endswith(".enc") or name in PROTECTED_NAMES:
                 continue
             path = os.path.join(root, name)
             with open(path, "rb") as file:
-                data = file.read()
-            enc_name = f.encrypt(name.encode("utf-8")).decode("ascii")
-            with open(os.path.join(root, enc_name + ".enc"), "wb") as file:
-                file.write(f.encrypt(data))
+                data = file.read()  # содержимое файла
+            name_bytes = name.encode("utf-8")
+            # Шифруем имя файла → получаем случайно выглядящий токен.
+            encrypted_name = cipher.encrypt(name_bytes).decode("ascii")
+            # Шифруем содержимое файла.
+            encrypted_data = cipher.encrypt(data)
+            # Пишем новый файл полностью, затем удаляем оригинал
+            # (правило «сначала записать — потом удалить», чтобы не потерять данные).
+            with open(os.path.join(root, encrypted_name + ".enc"), "wb") as file:
+                file.write(encrypted_data)
             os.remove(path)
             count += 1
     return count
 
 
 def decrypt_folder(folder, key):
-    """Decrypt every .enc file under `folder`; name and content are both decrypted."""
-    f = Fernet(key)
-    count = 0
+    """Расшифровывает каждый .enc-файл: и имя, и содержимое.
+
+    Это обратная операция к encrypt_folder.
+    """
+    cipher = Fernet(key)
+    count = 0  # сколько файлов расшифровано
     for root, _, files in os.walk(folder):
         for name in files:
             if not name.endswith(".enc"):
                 continue
+            # Имя файла (без .enc) — это зашифрованное настоящее имя.
+            token = name[:-4]
             try:
-                original_name = f.decrypt(name[:-4].encode("ascii")).decode("utf-8")
+                token_bytes = token.encode("ascii")
+                # Расшифровываем имя → получаем настоящее имя файла.
+                original_name = cipher.decrypt(token_bytes).decode("utf-8")
             except (InvalidToken, UnicodeError):
+                # Имя не расшифровалось — это «чужой» .enc-файл (например,
+                # ascii.enc от Tcl), а не наш. Пропускаем его, а не падаем.
                 continue
             path = os.path.join(root, name)
             with open(path, "rb") as file:
                 data = file.read()
             try:
-                decrypted = f.decrypt(data)
+                decrypted_data = cipher.decrypt(data)
             except InvalidToken:
+                # Содержимое не расшифровалось — файл повреждён или пароль неверный.
                 raise ValueError(f"Wrong password or corrupted file: {name}")
+            # Пишем расшифрованный файл под настоящим именем, затем удаляем .enc.
             with open(os.path.join(root, original_name), "wb") as file:
-                file.write(decrypted)
+                file.write(decrypted_data)
             os.remove(path)
             count += 1
     return count
 
 
 def encrypt(password):
-    """Encrypt the program's folder behind `password`. Returns a status message."""
+    """Шифрует папку программы за паролем. Возвращает сообщение-статус.
+
+    Это точка входа, которую вызывает frontend.py.
+    """
     folder = app_dir()
     try:
         salt = get_salt(folder)
         raw_key = derive_key(password, salt)
-        if os.path.exists(os.path.join(folder, MARKER_FILE)):
+        marker_path = os.path.join(folder, MARKER_FILE)
+        if os.path.exists(marker_path):
+            # Маркер уже есть → сначала проверяем пароль, потом шифруем.
             if not check_marker(folder, raw_key):
                 return "Wrong password."
         else:
+            # Маркера нет → это первое шифрование: создаём маркер.
             write_marker(folder, raw_key)
         key = fernet_key(raw_key)
-        n = encrypt_folder(folder, key)
-        return f"Encrypted files: {n}"
+        count = encrypt_folder(folder, key)
+        return f"Encrypted files: {count}"
     except Exception as e:
         return f"Error: {e}"
 
 
 def decrypt(password):
-    """Decrypt the program's folder behind `password`. Returns a status message."""
+    """Расшифровывает папку программы за паролем. Возвращает сообщение-статус."""
     folder = app_dir()
     try:
-        if not os.path.exists(os.path.join(folder, SALT_FILE)):
+        salt_path = os.path.join(folder, SALT_FILE)
+        if not os.path.exists(salt_path):
             return "Salt file not found."
-        if not os.path.exists(os.path.join(folder, MARKER_FILE)):
+        marker_path = os.path.join(folder, MARKER_FILE)
+        if not os.path.exists(marker_path):
             return "Marker file not found. Cannot verify password."
         salt = get_salt(folder)
         raw_key = derive_key(password, salt)
         if not check_marker(folder, raw_key):
             return "Wrong password."
         key = fernet_key(raw_key)
-        n = decrypt_folder(folder, key)
-        return f"Decrypted files: {n}"
+        count = decrypt_folder(folder, key)
+        return f"Decrypted files: {count}"
     except Exception as e:
         return f"Error: {e}"

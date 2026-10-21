@@ -109,6 +109,7 @@ class App:
         
         elif pwd1 != pwd2 and type:
             messagebox.showerror("Error", "Wrong password.")
+            
         else:
             messagebox.showerror("Error", "Passwords don't match.")
         return 
