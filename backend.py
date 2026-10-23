@@ -200,8 +200,9 @@ def decrypt_folder(folder, key):
 
 
 def encrypt(password):
-    """Шифрует папку программы за паролем. Возвращает сообщение-статус.
+    """Шифрует папку программы за паролем.
 
+    Возвращает пару (успех, сообщение), где успех — True или False.
     Это точка входа, которую вызывает frontend.py.
     """
     folder = app_dir()
@@ -212,36 +213,39 @@ def encrypt(password):
         if os.path.exists(marker_path):
             # Маркер уже есть → сначала проверяем пароль, потом шифруем.
             if not check_marker(folder, raw_key):
-                return "Wrong password."
+                return False, "Wrong password."
         else:
             # Маркера нет → это первое шифрование: создаём маркер.
             write_marker(folder, raw_key)
         key = fernet_key(raw_key)
         count = encrypt_folder(folder, key)
-        return f"Encrypted files: {count}"
+        return True, f"Encrypted files: {count}"
     except Exception as e:
-        return f"Error: {e}"
+        return False, f"Error: {e}"
 
 
 def decrypt(password):
-    """Расшифровывает папку программы за паролем. Возвращает сообщение-статус."""
+    """Расшифровывает папку программы за паролем.
+
+    Возвращает пару (успех, сообщение), где успех — True или False.
+    """
     folder = app_dir()
     try:
         salt_path = os.path.join(folder, SALT_FILE)
         if not os.path.exists(salt_path):
-            return "Salt file not found."
+            return False, "Salt file not found."
         marker_path = os.path.join(folder, MARKER_FILE)
         if not os.path.exists(marker_path):
-            return "Marker file not found. Cannot verify password."
+            return False, "Marker file not found. Cannot verify password."
         salt = get_salt(folder)
         raw_key = derive_key(password, salt)
         if not check_marker(folder, raw_key):
-            return "Wrong password."
+            return False, "Wrong password."
         key = fernet_key(raw_key)
         count = decrypt_folder(folder, key)
-        return f"Decrypted files: {count}"
+        return True, f"Decrypted files: {count}"
     except Exception as e:
-        return f"Error: {e}"
+        return False, f"Error: {e}"
 
 
 def has_encrypted_files():
@@ -260,17 +264,18 @@ def reset_password():
 
     Отказывает, если в папке ещё есть зашифрованные файлы — сначала их
     нужно расшифровать, иначе они станут нечитаемыми навсегда.
+    Возвращает пару (успех, сообщение).
     """
     folder = app_dir()
     try:
         if has_encrypted_files():
-            return "Decrypt your files first — some files are still encrypted."
+            return False, "Decrypt your files first — some files are still encrypted."
         marker_path = os.path.join(folder, MARKER_FILE)
         if os.path.exists(marker_path):
             os.remove(marker_path)
         salt_path = os.path.join(folder, SALT_FILE)
         if os.path.exists(salt_path):
             os.remove(salt_path)
-        return "Password reset."
+        return True, "Password reset."
     except Exception as e:
-        return f"Error: {e}"
+        return False, f"Error: {e}"

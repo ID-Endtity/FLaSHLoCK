@@ -63,6 +63,13 @@ class App:
     def show_password(self, checker, entry):
         entry.config(show="" if checker.get() else "*")
 
+    def show_result(self, ok, message):
+        """Показывает результат: успех — info-окно, ошибка — error-окно."""
+        if ok:
+            messagebox.showinfo("Done", message)
+        else:
+            messagebox.showerror("Error", message)
+
     def check(self, type):  # type 1 = шифрование, type 2 = расшифровка
         if not backend.has_marker():
             messagebox.showerror("Error", "No password set yet. Click Encrypt first.")
@@ -92,24 +99,24 @@ class App:
             messagebox.showwarning("Weak password", "Use at least 8 characters.")
         elif pwd1 == pwd2:
             self.win_set_pwd.destroy()
-            result = backend.encrypt(pwd1)
-            messagebox.showinfo("Done", result)
+            ok, message = backend.encrypt(pwd1)
+            self.show_result(ok, message)
         else:
             messagebox.showerror("Error", "Passwords don't match.")
 
     def verify_pwd(self, entered, type):
         """Проверяет введённый пароль через маркер, затем шифрует или расшифровывает."""
         self.win_check.destroy()
-        result = backend.encrypt(entered) if type == 1 else backend.decrypt(entered)
-        messagebox.showinfo("Done", result)
+        ok, message = backend.encrypt(entered) if type == 1 else backend.decrypt(entered)
+        self.show_result(ok, message)
 
     # ==================== RESET PASSWORD (закомментируй, чтобы отключить) ====================
     def reset_pwd(self):
         if not backend.has_marker():
             messagebox.showerror("Error", "No password set yet.")
             return
-        result = backend.reset_password()
-        messagebox.showinfo("Done", result)
+        ok, message = backend.reset_password()
+        self.show_result(ok, message)
     # ==========================================================================================
 
 
