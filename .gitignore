@@ -11,3 +11,5 @@ build/
 .flashlock_salt
 .flashlock_marker
 *.enc
+FlashLock.spec
+FlashLock.zip

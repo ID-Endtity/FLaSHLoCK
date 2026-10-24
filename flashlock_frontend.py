@@ -1,14 +1,14 @@
 import tkinter as tk
 from tkinter import Checkbutton, messagebox
 
-import backend
+import flashlock_backend
 
 
 class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Password check")
-        self.folder = backend.app_dir()
+        self.folder = flashlock_backend.app_dir()
         self.root.geometry("500x300")
         self.root.resizable(False, False)
         self.menu()
@@ -25,7 +25,7 @@ class App:
     def encr(self):
         # Пароль уже задан (маркер существует) → проверить и зашифровать.
         # Иначе — это первый запуск → установить пароль.
-        if backend.has_marker():
+        if flashlock_backend.has_marker():
             self.check(type=1)
         else:
             self.set_pwd()
@@ -71,7 +71,7 @@ class App:
             messagebox.showerror("Error", message)
 
     def check(self, type):  # type 1 = шифрование, type 2 = расшифровка
-        if not backend.has_marker():
+        if not flashlock_backend.has_marker():
             messagebox.showerror("Error", "No password set yet. Click Encrypt first.")
             return
         
@@ -99,7 +99,7 @@ class App:
             messagebox.showwarning("Weak password", "Use at least 8 characters.")
         elif pwd1 == pwd2:
             self.win_set_pwd.destroy()
-            ok, message = backend.encrypt(pwd1)
+            ok, message = flashlock_backend.encrypt(pwd1)
             self.show_result(ok, message)
         else:
             messagebox.showerror("Error", "Passwords don't match.")
@@ -107,15 +107,15 @@ class App:
     def verify_pwd(self, entered, type):
         """Проверяет введённый пароль через маркер, затем шифрует или расшифровывает."""
         self.win_check.destroy()
-        ok, message = backend.encrypt(entered) if type == 1 else backend.decrypt(entered)
+        ok, message = flashlock_backend.encrypt(entered) if type == 1 else flashlock_backend.decrypt(entered)
         self.show_result(ok, message)
 
     # ==================== RESET PASSWORD (закомментируй, чтобы отключить) ====================
     def reset_pwd(self):
-        if not backend.has_marker():
+        if not flashlock_backend.has_marker():
             messagebox.showerror("Error", "No password set yet.")
             return
-        ok, message = backend.reset_password()
+        ok, message = flashlock_backend.reset_password()
         self.show_result(ok, message)
     # ==========================================================================================
 
