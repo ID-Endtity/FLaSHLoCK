@@ -23,7 +23,7 @@ PROTECTED_NAMES = {
     SALT_FILE,
     MARKER_FILE,
     "flashlock", "flashlock.py", "flashlock.exe",
-    "frontend.py", "backend.py",
+    "frontend.py", "backend.py", "flashlock_frontend.py", "flashlock_backend.py",
 }
 
 
