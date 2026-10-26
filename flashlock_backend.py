@@ -7,7 +7,9 @@ backend.encrypt() или backend.decrypt(). Всё остальное наход
 import base64
 import hashlib
 import hmac
+import json
 import os
+import stat
 import sys
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -130,12 +132,44 @@ def has_marker():
     return os.path.exists(os.path.join(app_dir(), MARKER_FILE))
 
 
-def encrypt_folder(folder, key):
-    """Шифрует каждый файл в папке: и содержимое, и имя файла.
+def make_payload(path):
+    """Собирает метаданные и содержимое файла в словарь перед шифрованием.
 
-    Рекурсивно обходит все файлы. Каждый файл превращается в .enc со
-    «случайным» именем (это зашифрованное настоящее имя).
+    Для символической ссылки сохраняем её цель, а не содержимое —
+    чтобы после расшифровки ссылка восстановилась как ссылка.
     """
+    if os.path.islink(path):
+        return {
+            "type": "symlink",
+            "target": os.readlink(path),
+        }
+    st = os.lstat(path)
+    with open(path, "rb") as file:
+        data = file.read()
+    return {
+        "type": "file",
+        "mode": stat.S_IMODE(st.st_mode),  # только биты прав (rwx)
+        "mtime": st.st_mtime,
+        "atime": st.st_atime,
+        "data": base64.b64encode(data).decode("ascii"),
+    }
+
+
+def restore_payload(root, original_name, payload):
+    """Восстанавливает файл (или символическую ссылку) и его метаданные."""
+    target_path = os.path.join(root, original_name)
+    if payload["type"] == "symlink":
+        os.symlink(payload["target"], target_path)
+        return
+    with open(target_path, "wb") as file:
+        file.write(base64.b64decode(payload["data"]))
+    # Время ставим до chmod — чтобы потом снятие прав на запись не помешало.
+    os.utime(target_path, (payload["atime"], payload["mtime"]))
+    os.chmod(target_path, payload["mode"])
+
+
+def encrypt_folder(folder, key):
+    """Шифрует каждый файл в папке: содержимое, метаданные и имя."""
     cipher = Fernet(key)
     count = 0  # сколько файлов зашифровано
     for root, dirs, files in os.walk(folder):
@@ -146,13 +180,13 @@ def encrypt_folder(folder, key):
             if name.startswith(".") or name.endswith(".enc") or name in PROTECTED_NAMES:
                 continue
             path = os.path.join(root, name)
-            with open(path, "rb") as file:
-                data = file.read()  # содержимое файла
+            payload = make_payload(path)
             name_bytes = name.encode("utf-8")
             # Шифруем имя файла → получаем случайно выглядящий токен.
             encrypted_name = cipher.encrypt(name_bytes).decode("ascii")
-            # Шифруем содержимое файла.
-            encrypted_data = cipher.encrypt(data)
+            # Сериализуем метаданные + содержимое в JSON и шифруем целиком.
+            payload_bytes = json.dumps(payload).encode("utf-8")
+            encrypted_data = cipher.encrypt(payload_bytes)
             # Пишем новый файл полностью, затем удаляем оригинал
             # (правило «сначала записать — потом удалить», чтобы не потерять данные).
             with open(os.path.join(root, encrypted_name + ".enc"), "wb") as file:
@@ -163,7 +197,7 @@ def encrypt_folder(folder, key):
 
 
 def decrypt_folder(folder, key):
-    """Расшифровывает каждый .enc-файл: и имя, и содержимое.
+    """Расшифровывает каждый .enc-файл: имя, содержимое и метаданные.
 
     Это обратная операция к encrypt_folder.
     """
@@ -187,13 +221,16 @@ def decrypt_folder(folder, key):
             with open(path, "rb") as file:
                 data = file.read()
             try:
-                decrypted_data = cipher.decrypt(data)
+                payload_bytes = cipher.decrypt(data)
             except InvalidToken:
                 # Содержимое не расшифровалось — файл повреждён или пароль неверный.
                 raise ValueError(f"Wrong password or corrupted file: {name}")
-            # Пишем расшифрованный файл под настоящим именем, затем удаляем .enc.
-            with open(os.path.join(root, original_name), "wb") as file:
-                file.write(decrypted_data)
+            try:
+                payload = json.loads(payload_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Файл в старом формате (просто содержимое, без метаданных).
+                raise ValueError(f"Unsupported file format (old version?): {name}")
+            restore_payload(root, original_name, payload)
             os.remove(path)
             count += 1
     return count
