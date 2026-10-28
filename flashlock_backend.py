@@ -26,6 +26,7 @@ PROTECTED_NAMES = {
     MARKER_FILE,
     "flashlock", "flashlock.py", "flashlock.exe",
     "frontend.py", "backend.py", "flashlock_frontend.py", "flashlock_backend.py",
+    "test_backend.py", "build.sh",
 }
 
 
